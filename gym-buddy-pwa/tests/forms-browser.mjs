@@ -1,0 +1,127 @@
+import { chromium,expect } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+const base=process.env.TEST_URL||'http://127.0.0.1:8788';
+if(!['127.0.0.1','localhost'].includes(new URL(base).hostname))throw new Error('Use a synthetic local preview for form tests.');
+const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+const page=await context.newPage(),errors=[],token=randomUUID();
+page.on('pageerror',e=>errors.push(e.message));
+const sync=()=>expect(page.locator('#sync-status')).toContainText('All changes saved',{timeout:20000});
+const close=async()=>{if(await page.locator('#entry-dialog').isVisible())await page.getByRole('button',{name:'Close dialog',exact:true}).click();};
+const go=async name=>{await close();await page.locator('.sidebar').getByRole('button',{name,exact:true}).click();};
+const read=async()=>{const response=await context.request.get(`${base}/api/records`);expect(response.ok()).toBeTruthy();return (await response.json()).records;};
+const submit=async(name='Save entry')=>{await page.getByRole('button',{name,exact:true}).click();await expect(page.locator('#entry-dialog')).not.toBeVisible();await sync();};
+const names=()=>page.locator('#entry-form [name]').evaluateAll(elements=>elements.map(e=>e.name).sort());
+const findNew=async(before,type)=>{let found;await expect.poll(async()=>{found=(await read()).find(r=>r.type===type&&!before.has(r.id));return !!found;}).toBe(true);return found;};
+const existingIDs=async()=>new Set((await read()).map(r=>r.id));
+const post=async record=>{
+  const response=await context.request.post(`${base}/api/mutations`,{headers:{Origin:base},data:{operationId:randomUUID(),expectedVersion:0,record}});
+  expect(response.ok()).toBeTruthy();return response.json();
+};
+try{
+  const session=await (await context.request.get(`${base}/api/session`)).json();
+  if(!session.local||session.email!=='local@example.test')throw new Error('This audit requires GYM_BUDDY_TEST_MODE=1 and must not modify Tenzo’s personal database.');
+  await page.goto(base);await sync();
+  const profileBefore=(await read()).find(r=>r.id==='profile').data;
+  await page.getByRole('button',{name:'Custom amount',exact:true}).click();
+  expect(await names()).toEqual(['date','ml','time']);
+  await expect(page.getByLabel('Time · IST',{exact:true})).toHaveAttribute('required','');
+  await page.getByLabel('Water · ml',{exact:true}).fill('123');
+  await page.getByLabel('Time · IST',{exact:true}).fill('10:05');
+  let before=await existingIDs();await submit();const water=await findNew(before,'water');
+  expect(water.data).toEqual({ml:123,time:'10:05'});
+  await go('Food & water');await page.locator(`[data-edit="${water.id}"]`).click();
+  await expect(page.getByLabel('Time · IST',{exact:true})).toHaveValue('10:05');
+  await close();
+  const legacy={id:randomUUID(),type:'water',date:water.date,data:{ml:200},deleted:false};
+  await post(legacy);await page.reload();await sync();await go('Food & water');
+  await page.locator(`[data-edit="${legacy.id}"]`).click();
+  await expect(page.getByLabel('Time · IST',{exact:true})).toHaveValue('');
+  await expect(page.getByLabel('Time · IST',{exact:true})).not.toHaveAttribute('required','');
+  await page.getByLabel('Water · ml',{exact:true}).fill('210');await submit();
+  expect((await read()).find(r=>r.id===legacy.id).data).toEqual({ml:210});
+  console.log('PASS water: amount and editable IST time only; old unknown times remain unknown');
+
+  await go('Movement');
+  for(const kind of ['Treadmill walk','Walk–run','Badminton','Strength','Outdoor walk','Other']){
+    await page.getByRole('button',{name:'Log a session',exact:true}).click();
+    await page.getByLabel('Duration · minutes',{exact:true}).fill('20');
+    await page.getByLabel('Start time · IST',{exact:true}).fill('11:10');
+    await page.getByLabel('Activity',{exact:true}).selectOption(kind);
+    await expect(page.getByLabel('Duration · minutes',{exact:true})).toHaveValue('20');
+    await expect(page.getByLabel('Start time · IST',{exact:true})).toHaveValue('11:10');
+    const fields=await names(),treadmill=['Treadmill walk','Walk–run'].includes(kind),distance=treadmill||kind==='Outdoor walk';
+    expect(fields.includes('speed')).toBe(treadmill);expect(fields.includes('incline')).toBe(treadmill);expect(fields.includes('distance')).toBe(distance);
+    for(const unrelated of ['ml','weight','waist','calories','protein'])expect(fields.includes(unrelated)).toBe(false);
+    await expect(page.locator('details').filter({has:page.getByText('Samsung Watch readings (optional)',{exact:true})})).not.toHaveAttribute('open','');
+    before=await existingIDs();await submit();const saved=await findNew(before,'activity');
+    expect(saved.data).toEqual({kind,time:'11:10',minutes:20});
+  }
+  // Switching from populated treadmill settings must not store stale settings
+  // when the final chosen activity is badminton.
+  await page.getByRole('button',{name:'Log a session',exact:true}).click();
+  await page.getByLabel('Duration · minutes',{exact:true}).fill('25');
+  await page.getByText('Treadmill settings (optional)',{exact:true}).click();
+  await page.getByLabel('Treadmill speed · km/h',{exact:true}).fill('4.5');
+  await page.getByLabel('Incline · %',{exact:true}).fill('2');
+  await page.getByLabel('Activity',{exact:true}).selectOption('Badminton');
+  expect((await names()).includes('speed')).toBe(false);expect((await names()).includes('incline')).toBe(false);
+  before=await existingIDs();await submit();const badminton=await findNew(before,'activity');
+  expect(badminton.data.speed).toBeUndefined();expect(badminton.data.incline).toBeUndefined();
+  console.log('PASS all six activity forms; only relevant fields save; switching types preserves common inputs');
+
+  await go('Food & water');await page.getByRole('button',{name:'Log a meal',exact:true}).click();
+  expect(await names()).toEqual(['calories','date','meal','name','notes','portion','protein','saveFood','time']);
+  await expect(page.locator('[name="notes"]')).toHaveAttribute('maxlength','500');
+  await expect(page.locator('[name="name"]')).toHaveAttribute('maxlength','100');
+  const mealName=`Audit meal ${token}`;
+  await page.getByLabel('Food / meal name',{exact:true}).fill(mealName);
+  await page.getByLabel('Time · IST',{exact:true}).fill('08:10');
+  await page.getByLabel('Calories · kcal',{exact:true}).fill('450');
+  await page.getByLabel('Protein · g',{exact:true}).fill('25');
+  await page.getByLabel('Save this meal for quick reuse').check();await submit();
+  let template;await expect.poll(async()=>{template=(await read()).find(r=>r.type==='food'&&r.data.name===mealName);return !!template;}).toBe(true);
+  expect(template.data.time).toBeUndefined();expect(template.data.meal).toBeUndefined();
+  await page.getByRole('button',{name:'Saved meals',exact:true}).click();
+  await page.locator(`[data-edit="${template.id}"]`).click();
+  expect(await names()).toEqual(['calories','name','notes','portion','protein']);
+  await page.getByLabel('Protein · g',{exact:true}).fill('27');await submit();
+  expect((await read()).find(r=>r.id===template.id).data.protein).toBe(27);
+  await page.getByRole('button',{name:'Saved meals',exact:true}).click();
+  await page.locator(`[data-reuse="${template.id}"]`).click();
+  await expect(page.getByLabel('Time · IST',{exact:true})).not.toHaveValue('');
+  await expect(page.getByLabel('Protein · g',{exact:true})).toHaveValue('27');await close();
+  console.log('PASS food log and saved-meal editor have different fields; reusable templates carry no eating time');
+
+  await go('Progress');await page.getByRole('button',{name:'Add measurement',exact:true}).first().click();
+  let fields=await names();
+  for(const name of ['weight','waist','chest','hips','arm'])expect(fields.includes(name)).toBe(true);
+  for(const name of ['bodyFat','leanMass','visceralFat'])expect(fields.includes(name)).toBe(false);
+  await page.getByLabel('Weight · kg',{exact:true}).fill('78.2');
+  await page.getByLabel('Waist · cm',{exact:true}).fill('88');
+  await page.getByLabel('Measurement type',{exact:true}).selectOption('dexa');
+  fields=await names();
+  for(const name of ['weight','bodyFat','leanMass','visceralFat'])expect(fields.includes(name)).toBe(true);
+  for(const name of ['waist','chest','hips','arm'])expect(fields.includes(name)).toBe(false);
+  await expect(page.getByLabel('Weight · kg',{exact:true})).toHaveValue('78.2');
+  await page.getByLabel('Body fat · % (scan only)',{exact:true}).fill('28');
+  before=await existingIDs();await submit();const scan=await findNew(before,'measurement');
+  expect(scan.data).toEqual({measurementKind:'dexa',weight:78.2,bodyFat:28});
+  await page.getByRole('button',{name:'Add measurement',exact:true}).first().click();
+  await page.getByRole('button',{name:'Save entry',exact:true}).click();await expect(page.locator('#form-error')).toContainText('at least one measurement');
+  await page.getByLabel('Waist · cm',{exact:true}).fill('88');before=await existingIDs();await submit();
+  const body=await findNew(before,'measurement');expect(body.data).toEqual({measurementKind:'body',waist:88});
+  console.log('PASS body and DEXA measurement forms; no unrelated scan fields or empty measurements save');
+
+  await go('Today');await page.locator('main [data-action="checkin"]').first().click();
+  fields=await names();
+  expect(fields).toEqual(['foodComplete','notes','sleep','steps']);
+  const watch=page.locator('details').filter({has:page.getByText('Daily watch readings (optional)',{exact:true})});if(await watch.getAttribute('open')===null)await page.getByText('Daily watch readings (optional)',{exact:true}).click();
+  await page.getByLabel('Watch steps · optional',{exact:true}).fill('10000');
+  await page.getByLabel('Sleep · hours (optional)',{exact:true}).fill('7.5');await submit('Save check-in');
+  const checkin=(await read()).find(r=>r.id===`checkin-${water.date}`);
+  expect(checkin.data.steps).toBe(10000);expect(checkin.data.sleep).toBe(7.5);
+  expect((await read()).find(r=>r.id==='profile').data).toEqual(profileBefore);
+  expect(errors).toEqual([]);
+  console.log('PASS daily check-in uses daily fields only; personal DEXA baseline stays unchanged');
+}finally{await browser.close();}

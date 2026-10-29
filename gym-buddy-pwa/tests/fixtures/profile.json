@@ -1,0 +1,13 @@
+{
+  "records": [{
+    "id": "profile", "type": "profile", "date": "2026-10-28",
+    "data": {
+      "name": "Test Walker", "height": 180, "age": 30, "sex": "male",
+      "initialWeight": 80, "goalWeight": 76, "baselineDate": "2026-10-28",
+      "bodyFat": 30, "leanMass": null, "visceralFat": null,
+      "waterTarget": 2500, "proteinTarget": 120, "calorieTarget": null,
+      "startDate": "2026-11-01", "workoutTime": "11:00",
+      "exerciseDays": [0,2,4], "strengthDays": [1,5], "timezone": "Asia/Kolkata"
+    }
+  }]
+}

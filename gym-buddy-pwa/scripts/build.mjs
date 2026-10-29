@@ -1,0 +1,11 @@
+import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+await mkdir('dist', { recursive: true });
+await cp('public', 'dist', { recursive: true });
+const files = ['index.html','app.js','store.js','styles.css','domain.js','manifest.webmanifest','sw.js','_headers','_redirects','icons/icon.svg','icons/icon-192.png','icons/icon-512.png','icons/maskable-512.png'];
+const hash = createHash('sha256');
+for (const file of files) hash.update(await readFile(`dist/${file}`));
+const version = hash.digest('hex').slice(0,12);
+const sw = await readFile('public/sw.js', 'utf8');
+await writeFile('dist/sw.js', sw.replace('__BUILD__', version));
+console.log(`Built offline app ${version} → dist/`);

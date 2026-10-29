@@ -1,0 +1,6 @@
+# LOCAL development only. Do not add DEV_USER_EMAIL to Cloudflare production.
+DEV_USER_EMAIL="local@example.test"
+# Production: set these using the Cloudflare dashboard, or in .dev.vars for JWT testing.
+# ACCESS_TEAM_DOMAIN="https://YOUR-TEAM.cloudflareaccess.com"
+# ACCESS_AUD="YOUR-APPLICATION-AUDIENCE"
+# ALLOWED_EMAIL="you@example.com"
