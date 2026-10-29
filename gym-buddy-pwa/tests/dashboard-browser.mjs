@@ -1,0 +1,68 @@
+import { chromium,expect } from '@playwright/test';
+import { mkdir } from 'node:fs/promises';
+const base=process.env.TEST_URL||'http://127.0.0.1:8793';
+if(!['localhost','127.0.0.1'].includes(new URL(base).hostname))throw new Error('Use a synthetic local preview.');
+const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+const page=await context.newPage(),errors=[];
+page.on('pageerror',e=>errors.push(e.message));
+const timeout=setTimeout(()=>{console.error('Dashboard browser test timed out');process.exit(1);},90000);
+async function editStart(value){
+  await page.getByRole('button',{name:'Open settings',exact:true}).click();
+  await page.getByRole('button',{name:'Edit daily goals & plan',exact:true}).click();
+  await page.locator('[name="startDate"]').fill(value);
+  await page.getByRole('button',{name:'Save plan',exact:true}).click();
+  await expect(page.locator('#entry-dialog')).not.toBeVisible();
+  await page.locator('.sidebar').getByRole('button',{name:'Today',exact:true}).click();
+}
+try{
+  await page.goto(base);console.log('Dashboard loaded');await expect(page.locator('h1')).toContainText('Your day');
+  await expect(page.locator('#sync-status')).toContainText('All changes saved',{timeout:20000});
+  await page.evaluate(()=>navigator.serviceWorker.ready);
+  // The synthetic profile starts in November. Preview tutorials are available now.
+  await expect(page.locator('.gym-workout h2')).toHaveText('Your first gym session');
+  await page.locator('[data-dashboard-guide]').first().click();
+  await expect(page.locator('.exercise-guide li').first()).toBeVisible();
+  await expect.poll(()=>page.locator('.exercise-photos img').evaluateAll(imgs=>imgs.every(i=>i.complete&&i.naturalWidth>0))).toBe(true);
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await editStart('2026-10-19');console.log('Tutorial preview verified; checking strength session');
+  await page.locator('#selected-date').fill('2026-10-26');
+  await expect(page.locator('.gym-exercise')).toHaveCount(5);
+  await page.locator('[data-dashboard-guide="Bodyweight_Squat"]').click();
+  await expect(page.locator('.exercise-guide li').first()).toBeVisible();
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await page.getByRole('button',{name:'Log / update this workout',exact:true}).click();
+  await expect(page.locator('[name="kind"]')).toHaveValue('Strength');
+  await expect(page.locator('[data-exercise-row]')).toHaveCount(5);
+  await page.locator('[name="minutes"]').fill('17');
+  await page.locator('[name="time"]').fill('11:00');
+  await page.locator('[data-completed]').first().check();
+  await page.locator('[data-value="sets"]').first().fill('2');
+  await page.locator('[data-value="reps"]').first().fill('10');
+  console.log('Checking offline save and edit');await context.setOffline(true);
+  await page.getByRole('button',{name:'Save entry',exact:true}).click();
+  await expect(page.locator('.gym-workout .pill')).toHaveText('1 / 5 exercises done');
+  await expect(page.locator('[data-exercise-status="Bodyweight_Squat"]')).toHaveText('Completed');
+  await expect(page.locator('[data-exercise-status="Incline_Push-Up"]')).toHaveText('Not completed');
+  await page.reload();
+  await page.locator('#selected-date').fill('2026-10-26');
+  await expect(page.locator('.gym-workout .pill')).toHaveText('1 / 5 exercises done');
+  await page.getByRole('button',{name:'Log / update this workout',exact:true}).click();
+  await expect(page.locator('[name="minutes"]')).toHaveValue('17');
+  await expect(page.locator('[data-value="sets"]').first()).toHaveValue('2');
+  await page.locator('[data-completed]').first().uncheck();
+  await page.getByRole('button',{name:'Save entry',exact:true}).click();
+  await expect(page.locator('.gym-workout .pill')).toHaveText('0 / 5 exercises done');
+  await mkdir('test-results',{recursive:true});
+  await page.screenshot({path:'test-results/dashboard-mobile.png',fullPage:true});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await context.setOffline(false);await page.reload();
+  await expect(page.locator('#sync-status')).toContainText('All changes saved',{timeout:20000});
+  const {records}=await (await context.request.get(`${base}/api/records`)).json();
+  const saved=records.filter(r=>!r.deleted&&r.date==='2026-10-26'&&r.data.exercises?.some(e=>e.exerciseId==='Bodyweight_Squat'));
+  expect(saved).toHaveLength(1);expect(saved[0].data.minutes).toBe(17);
+  expect(saved[0].data.exercises[0]).toMatchObject({completed:false,sets:2,reps:10});
+  await editStart('2026-11-01');
+  expect(errors).toEqual([]);
+  console.log('PASS dashboard preview, tutorials, strength checklist, partial completion, edit without duplication, offline reload, sync and mobile layout');
+}finally{clearTimeout(timeout);await browser.close();}

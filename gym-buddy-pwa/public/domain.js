@@ -33,7 +33,7 @@ export function measurementKind(data={}) {
 }
 export function measurementFields(kind) { return kind==='dexa'?SCAN_FIELDS:kind==='combined'?[...BODY_FIELDS,...SCAN_FIELDS.slice(1)]:BODY_FIELDS; }
 export function activityFields(kind) {
-  const fields=['kind','time','minutes','effort','feeling','heartRate','watchCalories','notes'];
+  const fields=['kind','time','minutes','effort','feeling','heartRate','watchCalories','notes','exercises'];
   if(['Treadmill walk','Walk–run','Outdoor walk'].includes(kind))fields.push('distance');
   if(['Treadmill walk','Walk–run'].includes(kind))fields.push('speed','incline');
   return fields;
@@ -103,6 +103,18 @@ export function validateRecord(record) {
     bounded(d.minutes,1,480,'Duration'); bounded(d.distance,0,100,'Distance',true); bounded(d.speed,0,30,'Speed',true); bounded(d.incline,0,30,'Incline',true);
     bounded(d.effort,1,10,'Effort',true); bounded(d.heartRate,30,240,'Average heart rate',true); bounded(d.watchCalories,0,5000,'Watch calories',true);
     if(d.feeling!==undefined&&d.feeling!==null&&d.feeling!==''&&!['Good','Okay','Hard'].includes(d.feeling)) throw new Error('Choose how the session felt.');
+    if(d.exercises!==undefined){
+      if(!Array.isArray(d.exercises)||d.exercises.length>20)throw new Error('Choose up to 20 exercises per workout.');
+      const ids=new Set();
+      for(const e of d.exercises){
+        if(!e||typeof e!=='object'||Array.isArray(e)||Object.keys(e).some(k=>!['source','exerciseId','name','completed','sets','reps','weight'].includes(k)))throw new Error('Invalid exercise entry.');
+        if(e.source!=='free-exercise-db'||typeof e.exerciseId!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(e.exerciseId)||ids.has(e.exerciseId))throw new Error('Invalid or duplicate exercise identity.');
+        ids.add(e.exerciseId);text(e.name,150,'exercise name',true);
+        if(typeof e.completed!=='boolean')throw new Error('Mark exercise completion explicitly.');
+        for(const [key,max] of [['sets',100],['reps',1000]])if(e[key]!==undefined&&(!Number.isInteger(e[key])||e[key]<1||e[key]>max))throw new Error(`${key} must be a positive whole number up to ${max}.`);
+        if(e.weight!==undefined)bounded(e.weight,0,1000,'Exercise weight');
+      }
+    }
     text(d.notes,1000,'notes');
   }
   if (record.type === 'measurement') {
@@ -138,7 +150,7 @@ export function totals(records, date) {
 }
 export function workoutDone(plan, total) {
   if(plan.type==='Walk') return total.activities.some(a=>['Treadmill walk','Walk–run','Outdoor walk','Badminton'].includes(a.data.kind)) && total.activities.filter(a=>['Treadmill walk','Walk–run','Outdoor walk','Badminton'].includes(a.data.kind)).reduce((s,a)=>s+a.data.minutes,0)>=plan.minutes;
-  if(plan.type==='Strength') return total.activities.some(a=>a.data.kind==='Strength');
+  if(plan.type==='Strength') return total.activities.some(a=>a.data.kind==='Strength'&&(!a.data.exercises?.length||a.data.exercises.every(e=>e.completed)));
   if(plan.type==='Recovery') return !!total.checkin.recoveryDone;
   return false;
 }

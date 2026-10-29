@@ -15,6 +15,10 @@
     "profile:remote": "node scripts/seed-profile.mjs --remote",
     "deploy": "npm run build && node scripts/deploy.mjs",
     "test:browser": "node tests/browser.mjs",
+    "test:meal-photo": "node tests/meal-photo-browser.mjs",
+    "test:ai": "node tests/ai-browser.mjs",
+    "test:exercises": "node tests/exercises-browser.mjs",
+    "test:dashboard": "node tests/dashboard-browser.mjs",
     "test:forms": "node tests/forms-browser.mjs"
   },
   "dependencies": { "jose": "^6.1.0" },
